@@ -1,0 +1,78 @@
+# =============================================================================
+# INSTRUCCIONES DE INSTALACIÓN Y USO
+# Portfolio Analyzer · Versión 1.0
+# =============================================================================
+
+
+PASO 1 — INSTALAR DEPENDENCIAS
+────────────────────────────────
+Abre CMD y ejecuta:
+
+    py -m pip install streamlit yfinance pandas numpy scipy plotly openpyxl requests
+
+
+PASO 2 — COPIAR ARCHIVOS
+────────────────────────────────
+Copia todos estos archivos en la carpeta:
+D:\Datos Usuario\Documents\PROYECTO APRENDIZAJE IA\2. AUTOMATIZACION PORTAFOLIO\portfolio_analyzer\
+
+    config.py
+    datos.py
+    calculos.py
+    optimizacion.py
+    dashboard.py
+
+
+PASO 3 — CORRER EL DASHBOARD
+────────────────────────────────
+Abre Git Bash, navega a la carpeta:
+
+    cd "D:/Datos Usuario/Documents/PROYECTO APRENDIZAJE IA/2. AUTOMATIZACION PORTAFOLIO/portfolio_analyzer"
+
+Ejecuta:
+
+    py -m streamlit run dashboard.py
+
+Se abre automáticamente en tu navegador.
+
+
+PASO 4 — USO
+────────────────────────────────
+1. En el panel izquierdo ingresa los tickers de Yahoo Finance
+   (el ÚLTIMO ticker es el benchmark, usualmente ^GSPC)
+2. Opcional: agrega palabras clave de FICs colombianos
+3. Selecciona los períodos a analizar
+4. Ajusta RF y días hábiles si necesario
+5. Presiona "Ejecutar análisis"
+6. Descarga el Excel con todos los resultados
+
+
+CÓMO CAMBIAR ACTIVOS
+────────────────────────────────
+Solo cambia los tickers en el campo del dashboard.
+No necesitas tocar el código.
+
+
+PARA COMPARTIR CON EL PROFESOR
+────────────────────────────────
+Opción 1 (recomendada): publicar en Streamlit Cloud
+    - Crear cuenta en share.streamlit.io
+    - Subir el proyecto a GitHub
+    - Conectar el repositorio
+    - Compartir el link generado
+
+Opción 2: enviar el Excel exportado directamente
+
+
+LIBRERÍAS USADAS
+────────────────────────────────
+streamlit   → interfaz web interactiva
+yfinance    → datos Yahoo Finance
+pandas      → manipulación de datos
+numpy       → cálculos vectorizados
+scipy       → optimización de portafolio
+plotly      → gráficos interactivos
+openpyxl    → exportación a Excel
+requests    → API datos.gov.co
+
+=============================================================================
