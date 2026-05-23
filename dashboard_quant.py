@@ -10,6 +10,18 @@ from io import BytesIO
 import warnings
 warnings.filterwarnings('ignore')
 
+# PDF generation
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib import colors as rl_colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm, mm
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    PageBreak, Image as RLImage, KeepTogether
+)
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from datetime import datetime
+
 # ─────────────────────────────────────────────
 # CONFIGURACION PAGINA
 # ─────────────────────────────────────────────
@@ -424,9 +436,119 @@ def get_fib_summary(signal_text):
     if "VENTA"  in signal_text: return "VENTA"
     return "HOLD"
 
-def calc_fibonacci(prices_series):
-    high = prices_series.max()
-    low  = prices_series.min()
+def detect_zigzag_pivots(prices_series, reversal_pct=0.05, min_duration_days=30):
+    """
+    Detecta pivotes (máximos y mínimos significativos) usando el algoritmo ZigZag.
+
+    Args:
+        prices_series: serie de precios indexada por fecha
+        reversal_pct: % mínimo de reversión para considerar un nuevo pivote (default 5%)
+        min_duration_days: duración mínima del swing en días (default 30)
+
+    Returns:
+        Lista de tuplas (fecha, precio, tipo) donde tipo es 'H' (high) o 'L' (low)
+    """
+    if len(prices_series) < 2:
+        return []
+
+    prices = prices_series.dropna()
+    if len(prices) < 2:
+        return []
+
+    pivots = []
+    # Primer punto: inicializar con el primer precio como pivote tentativo
+    # Determinamos dirección inicial buscando primero un movimiento significativo
+    first_date  = prices.index[0]
+    first_price = prices.iloc[0]
+
+    # Buscar dirección inicial
+    direction = None  # 'up' o 'down'
+    pivot_date  = first_date
+    pivot_price = first_price
+
+    for date, price in prices.items():
+        if direction is None:
+            # Aún no hay dirección establecida
+            change = (price - pivot_price) / pivot_price
+            if change >= reversal_pct:
+                direction = 'up'
+                pivots.append((pivot_date, pivot_price, 'L'))
+                pivot_date, pivot_price = date, price
+            elif change <= -reversal_pct:
+                direction = 'down'
+                pivots.append((pivot_date, pivot_price, 'H'))
+                pivot_date, pivot_price = date, price
+            else:
+                # Actualizar pivote tentativo si el precio sigue siendo extremo
+                if price > pivot_price:
+                    pivot_date, pivot_price = date, price
+                elif price < pivot_price:
+                    pivot_date, pivot_price = date, price
+        elif direction == 'up':
+            # Estamos en tendencia alcista, buscando un nuevo máximo o una reversión
+            if price > pivot_price:
+                # Nuevo máximo tentativo
+                pivot_date, pivot_price = date, price
+            else:
+                # Verificar si la caída desde el pivote es suficiente para revertir
+                drop = (pivot_price - price) / pivot_price
+                duration = (date - pivot_date).days
+                if drop >= reversal_pct and duration >= min_duration_days:
+                    # Confirmamos el pivote alto y cambiamos dirección
+                    pivots.append((pivot_date, pivot_price, 'H'))
+                    direction = 'down'
+                    pivot_date, pivot_price = date, price
+        elif direction == 'down':
+            # Tendencia bajista, buscando nuevo mínimo o reversión
+            if price < pivot_price:
+                pivot_date, pivot_price = date, price
+            else:
+                rise = (price - pivot_price) / pivot_price
+                duration = (date - pivot_date).days
+                if rise >= reversal_pct and duration >= min_duration_days:
+                    pivots.append((pivot_date, pivot_price, 'L'))
+                    direction = 'up'
+                    pivot_date, pivot_price = date, price
+
+    # Agregar el último pivote tentativo (la tendencia en curso)
+    if direction is not None and (len(pivots) == 0 or pivots[-1][0] != pivot_date):
+        last_type = 'H' if direction == 'up' else 'L'
+        pivots.append((pivot_date, pivot_price, last_type))
+
+    return pivots
+
+
+def calc_fibonacci(prices_series, reversal_pct=0.05, min_duration_days=30):
+    """
+    Calcula niveles de Fibonacci basados en el último swing significativo detectado por ZigZag.
+
+    Si el último pivote es un MÁXIMO (tendencia alcista terminó) → traza retrocesos de la subida
+    Si el último pivote es un MÍNIMO (tendencia bajista terminó) → traza rebotes de la caída
+    """
+    pivots = detect_zigzag_pivots(prices_series, reversal_pct, min_duration_days)
+
+    # Fallback: si no se detectan al menos 2 pivotes, usar max/min global del período
+    if len(pivots) < 2:
+        high = prices_series.max()
+        low  = prices_series.min()
+        high_date = prices_series.idxmax()
+        low_date  = prices_series.idxmin()
+        trend = "Alcista (fallback global)" if high_date > low_date else "Bajista (fallback global)"
+    else:
+        # Tomar los dos últimos pivotes — definen el swing actual
+        p1 = pivots[-2]  # pivote anterior
+        p2 = pivots[-1]  # último pivote
+        if p2[2] == 'H':
+            # Última tendencia fue alcista (terminó en máximo)
+            low,  low_date  = p1[1], p1[0]
+            high, high_date = p2[1], p2[0]
+            trend = "Alcista (esperando retroceso)"
+        else:
+            # Última tendencia fue bajista (terminó en mínimo)
+            high, high_date = p1[1], p1[0]
+            low,  low_date  = p2[1], p2[0]
+            trend = "Bajista (esperando rebote)"
+
     diff = high - low
     levels = {
         "0% (Mínimo)":   low,
@@ -436,10 +558,18 @@ def calc_fibonacci(prices_series):
         "61.8%":          low + 0.618 * diff,
         "100% (Máximo)":  high,
     }
-    return levels, high, low
+    meta = {
+        "trend": trend,
+        "high_date": high_date,
+        "low_date":  low_date,
+        "pivots": pivots,
+    }
+    return levels, high, low, meta
 
-def get_fib_signal(prices_series):
-    levels, high, low = calc_fibonacci(prices_series)
+
+def get_fib_signal(prices_series, reversal_pct=0.05, min_duration_days=30):
+    fib_out = calc_fibonacci(prices_series, reversal_pct, min_duration_days)
+    levels, high, low, meta = fib_out
     last = prices_series.iloc[-1]
     ordered = sorted(levels.items(), key=lambda x: x[1])
     below = [l for l in ordered if l[1] <= last]
@@ -449,12 +579,12 @@ def get_fib_signal(prices_series):
     pct_from_support    = (last - support[1])    / support[1]    if support[1] != 0 else 0
     pct_from_resistance = (resistance[1] - last) / last          if last != 0        else 0
     if pct_from_support < 0.02:
-        signal = f"✅ COMPRA: Precio cerca del soporte Fibonacci {support[0]} (${support[1]:.2f})"
+        signal = f"✅ COMPRA: Precio cerca del soporte Fib {support[0]} (${support[1]:.2f}) — {meta['trend']}"
     elif pct_from_resistance < 0.02:
-        signal = f"🔴 VENTA: Precio cerca de resistencia Fibonacci {resistance[0]} (${resistance[1]:.2f})"
+        signal = f"🔴 VENTA: Precio cerca de resistencia Fib {resistance[0]} (${resistance[1]:.2f}) — {meta['trend']}"
     else:
-        signal = f"⏸ HOLD: Entre {support[0]} (${support[1]:.2f}) y {resistance[0]} (${resistance[1]:.2f})"
-    return signal, levels
+        signal = f"⏸ HOLD: Entre {support[0]} (${support[1]:.2f}) y {resistance[0]} (${resistance[1]:.2f}) — {meta['trend']}"
+    return signal, levels, meta
 
 # ─────────────────────────────────────────────
 # PLOTLY HELPERS
@@ -533,7 +663,7 @@ def fig_rsi(rsi_series, ticker, period=14, buy_th=30, sell_th=70):
     fig.update_layout(title=f"RSI({period}) — {ticker} [buy≤{buy_th} / sell≥{sell_th}]", **layout)
     return fig
 
-def fig_fibonacci(prices_series, levels, ticker):
+def fig_fibonacci(prices_series, levels, ticker, meta=None):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices_series.index, y=prices_series, name="Precio",
                              line=dict(color="#e2e8f0", width=1.5)))
@@ -542,7 +672,27 @@ def fig_fibonacci(prices_series, levels, ticker):
         fig.add_hline(y=val, line=dict(color=fib_colors[i % len(fib_colors)],
                                        dash="dot", width=1),
                       annotation_text=label, annotation_position="right")
-    fig.update_layout(title=f"Fibonacci — {ticker}", **DARK_LAYOUT)
+    # Marcar pivotes ZigZag si están disponibles
+    if meta and "pivots" in meta and meta["pivots"]:
+        highs_x = [p[0] for p in meta["pivots"] if p[2] == 'H']
+        highs_y = [p[1] for p in meta["pivots"] if p[2] == 'H']
+        lows_x  = [p[0] for p in meta["pivots"] if p[2] == 'L']
+        lows_y  = [p[1] for p in meta["pivots"] if p[2] == 'L']
+        if highs_x:
+            fig.add_trace(go.Scatter(x=highs_x, y=highs_y, name="Pivote Alto",
+                                     mode="markers", marker=dict(color="#fc8181", size=10, symbol="triangle-down")))
+        if lows_x:
+            fig.add_trace(go.Scatter(x=lows_x, y=lows_y, name="Pivote Bajo",
+                                     mode="markers", marker=dict(color="#68d391", size=10, symbol="triangle-up")))
+        # Línea conectando los pivotes (línea ZigZag)
+        zz_x = [p[0] for p in meta["pivots"]]
+        zz_y = [p[1] for p in meta["pivots"]]
+        fig.add_trace(go.Scatter(x=zz_x, y=zz_y, name="ZigZag",
+                                 line=dict(color="#b794f4", width=1, dash="dash"), opacity=0.6))
+    title = f"Fibonacci — {ticker}"
+    if meta and "trend" in meta:
+        title += f" | Tendencia: {meta['trend']}"
+    fig.update_layout(title=title, **DARK_LAYOUT)
     return fig
 
 def fig_correlacion(ln_prices, stats_result, benchmark_col):
@@ -553,6 +703,278 @@ def fig_correlacion(ln_prices, stats_result, benchmark_col):
     layout = {**DARK_LAYOUT, "yaxis": dict(range=[-1,1], gridcolor="#1e2535", showgrid=True)}
     fig.update_layout(title=f"Correlación vs {benchmark_col}", **layout)
     return fig
+
+# ─────────────────────────────────────────────
+# GENERACIÓN DE PDF
+# ─────────────────────────────────────────────
+def plotly_to_image(fig, width=900, height=500, scale=1.5):
+    """Convierte una figura Plotly a imagen PNG en memoria usando kaleido.
+    Adapta el layout a fondo blanco para mejor lectura en PDF."""
+    # Clonar y forzar tema claro para PDF
+    fig_pdf = go.Figure(fig)
+    fig_pdf.update_layout(
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color="black", family="Helvetica"),
+        xaxis=dict(gridcolor="#cccccc", showgrid=True, color="black"),
+        yaxis=dict(gridcolor="#cccccc", showgrid=True, color="black"),
+        legend=dict(bgcolor="white", bordercolor="#cccccc", borderwidth=1, font=dict(color="black")),
+    )
+    # Algunos sub-axes en make_subplots no se tocan con update_layout: forzar de uno
+    fig_pdf.update_xaxes(gridcolor="#cccccc", color="black")
+    fig_pdf.update_yaxes(gridcolor="#cccccc", color="black")
+    img_bytes = fig_pdf.to_image(format="png", width=width, height=height, scale=scale, engine="kaleido")
+    return BytesIO(img_bytes)
+
+
+def df_to_pdf_table(df, col_widths=None, font_size=7, max_rows=None):
+    """Convierte un DataFrame de pandas a una tabla ReportLab estilizada."""
+    if max_rows and len(df) > max_rows:
+        df = df.head(max_rows)
+    # Incluir índice como primera columna
+    if df.index.name:
+        idx_name = df.index.name
+    else:
+        idx_name = ""
+    data = [[idx_name] + [str(c) for c in df.columns]]
+    for idx, row in df.iterrows():
+        data.append([str(idx)] + [str(v) for v in row.values])
+
+    tbl = Table(data, colWidths=col_widths, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND',  (0, 0), (-1, 0), rl_colors.HexColor("#2d3748")),
+        ('TEXTCOLOR',   (0, 0), (-1, 0), rl_colors.white),
+        ('FONTNAME',    (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE',    (0, 0), (-1, -1), font_size),
+        ('ALIGN',       (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN',      (0, 0), (-1, -1), 'MIDDLE'),
+        ('GRID',        (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#cbd5e0")),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [rl_colors.white, rl_colors.HexColor("#f7fafc")]),
+        ('LEFTPADDING',  (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+        ('TOPPADDING',   (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING',(0, 0), (-1, -1), 3),
+    ]))
+    return tbl
+
+
+def build_pdf_report(report_data):
+    """
+    Construye el PDF completo con todos los períodos analizados.
+
+    report_data: dict con la siguiente estructura:
+    {
+        'meta': {
+            'tickers': [...], 'benchmark': str, 'fecha_ini': str, 'fecha_fin': str,
+            'nombres': dict, 'activos': [...], 'activo_limitante': str, 'fecha_corte': str,
+            'config': dict con todos los parámetros
+        },
+        'periodos': {
+            'periodo_label': {
+                'figs': {'base100': fig, 'corr': fig},
+                'tables': {'stat': df, 'percentiles': df, 'resumen': df,
+                           'mm': df, 'macd': df, 'rsi': df, 'fib': df,
+                           'consenso': df, 'consolidado': df},
+                'tec_figs': {ticker: {'mm': fig, 'macd': fig, 'rsi': fig, 'fib': fig}},
+                'score_fig': fig
+            }
+        }
+    }
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        rightMargin=1.5*cm, leftMargin=1.5*cm,
+        topMargin=1.5*cm, bottomMargin=1.5*cm,
+    )
+
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle('h1c', parent=styles['Heading1'], fontSize=22,
+                        textColor=rl_colors.HexColor("#2d3748"), spaceAfter=10, alignment=TA_CENTER)
+    h2 = ParagraphStyle('h2c', parent=styles['Heading2'], fontSize=16,
+                        textColor=rl_colors.HexColor("#2b6cb0"), spaceAfter=8, spaceBefore=14)
+    h3 = ParagraphStyle('h3c', parent=styles['Heading3'], fontSize=12,
+                        textColor=rl_colors.HexColor("#2d3748"), spaceAfter=6, spaceBefore=10)
+    normal = ParagraphStyle('normal_c', parent=styles['Normal'], fontSize=9,
+                            textColor=rl_colors.HexColor("#1a202c"), leading=12)
+    small = ParagraphStyle('small_c', parent=styles['Normal'], fontSize=8,
+                           textColor=rl_colors.HexColor("#4a5568"), leading=10)
+
+    story = []
+    meta = report_data['meta']
+
+    # ─────── PORTADA ───────
+    story.append(Spacer(1, 4*cm))
+    story.append(Paragraph("QUANT ANALYSIS DASHBOARD", h1))
+    story.append(Spacer(1, 0.5*cm))
+    story.append(Paragraph("Informe de Análisis Técnico y Estadístico", h2))
+    story.append(Spacer(1, 1.5*cm))
+
+    cover_tbl = Table([
+        ["Fecha del reporte:", datetime.now().strftime("%Y-%m-%d %H:%M")],
+        ["Benchmark:",          f"{meta['benchmark']} ({meta['nombres'].get(meta['benchmark'], meta['benchmark'])})"],
+        ["Activos analizados:", ", ".join(meta['activos'])],
+        ["Rango de datos:",     f"{meta['fecha_ini']}  →  {meta['fecha_fin']}"],
+        ["Períodos:",            ", ".join(report_data['periodos'].keys())],
+    ], colWidths=[5*cm, 11*cm])
+    cover_tbl.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('TEXTCOLOR', (0, 0), (0, -1), rl_colors.HexColor("#2d3748")),
+        ('TEXTCOLOR', (1, 0), (1, -1), rl_colors.HexColor("#1a202c")),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    story.append(cover_tbl)
+    story.append(PageBreak())
+
+    # ─────── PARÁMETROS DE CONFIGURACIÓN ───────
+    story.append(Paragraph("Parámetros de Configuración", h2))
+    cfg = meta['config']
+    config_data = [
+        ["Pesos macro — Estadístico vs Técnico", f"{cfg['w_stat_total']*100:.0f}%  /  {cfg['w_tec_total']*100:.0f}%"],
+        ["Pesos estadístico — Regresión / Percentil", f"{cfg['w_reg']*100:.0f}%  /  {cfg['w_pct']*100:.0f}%"],
+        ["Pesos técnico — MM / RSI / MACD / Fib", f"{cfg['mm_w']}% / {cfg['rsi_w']}% / {cfg['macd_w']}% / {cfg['fib_w']}%"],
+        ["Períodos Medias Móviles",         ", ".join(str(p) for p in cfg['mm_periods'])],
+        ["Período RSI",                      str(cfg['rsi_period'])],
+        ["Umbrales RSI (compra/venta)",     f"≤{cfg['rsi_buy_threshold']}  /  ≥{cfg['rsi_sell_threshold']}"],
+        ["MACD (fast / slow / signal)",     f"{cfg['macd_fast']} / {cfg['macd_slow']} / {cfg['macd_signal']}"],
+        ["Fibonacci — % reversión ZigZag",  f"{cfg['fib_reversal_pct']*100:.1f}%"],
+        ["Fibonacci — Duración mínima swing", f"{cfg['fib_min_duration']} días"],
+        ["Umbral estadístico (suma_producto)", f"±{cfg['stat_threshold']*100:.1f}%"],
+        ["Umbral decisión final (score)",   f"±{cfg['final_threshold']:.2f}"],
+    ]
+    cfg_tbl = Table(config_data, colWidths=[8*cm, 8*cm])
+    cfg_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), rl_colors.HexColor("#edf2f7")),
+        ('FONTNAME',   (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE',   (0, 0), (-1, -1), 9),
+        ('GRID',       (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#cbd5e0")),
+        ('LEFTPADDING',(0, 0), (-1, -1), 6),
+        ('RIGHTPADDING',(0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING',(0, 0), (-1, -1), 4),
+    ]))
+    story.append(cfg_tbl)
+    story.append(Spacer(1, 0.5*cm))
+
+    if meta.get('activo_limitante'):
+        story.append(Paragraph(
+            f"<b>Fecha unificada:</b> el análisis arranca en <b>{meta['fecha_corte']}</b> "
+            f"porque <b>{meta['activo_limitante']}</b> es el activo con menor histórico disponible.",
+            normal
+        ))
+    story.append(PageBreak())
+
+    # ─────── RESUMEN EJECUTIVO ───────
+    story.append(Paragraph("Resumen Ejecutivo", h2))
+    story.append(Paragraph(
+        "Consolidado de recomendaciones finales por período. "
+        "Cada activo recibe una recomendación (COMPRA / VENTA / MANTENER) basada en el score ponderado "
+        "que combina las señales estadísticas y técnicas según los pesos y umbrales configurados.",
+        normal
+    ))
+    story.append(Spacer(1, 0.4*cm))
+
+    for periodo, pdata in report_data['periodos'].items():
+        story.append(Paragraph(f"Período: {periodo}", h3))
+        if 'consolidado' in pdata['tables']:
+            # Subset de columnas claves para resumen
+            df_consol = pdata['tables']['consolidado']
+            cols_resumen = [c for c in ['Score Final', 'RECOMENDACIÓN'] if c in df_consol.columns]
+            if cols_resumen:
+                df_show = df_consol[cols_resumen].copy()
+                df_show.index.name = "Activo"
+                story.append(df_to_pdf_table(df_show, font_size=8, col_widths=[3.5*cm, 3*cm, 4*cm]))
+                story.append(Spacer(1, 0.3*cm))
+    story.append(PageBreak())
+
+    # ─────── POR CADA PERÍODO ───────
+    for periodo, pdata in report_data['periodos'].items():
+        story.append(Paragraph(f"Análisis del período: {periodo}", h1))
+        story.append(Spacer(1, 0.4*cm))
+
+        # ── Bloque Estadístico ──
+        story.append(Paragraph("Bloque Estadístico", h2))
+
+        if 'base100' in pdata['figs']:
+            img = plotly_to_image(pdata['figs']['base100'], width=900, height=400)
+            story.append(RLImage(img, width=17*cm, height=7.5*cm))
+            story.append(Spacer(1, 0.3*cm))
+
+        if 'corr' in pdata['figs']:
+            img = plotly_to_image(pdata['figs']['corr'], width=900, height=400)
+            story.append(RLImage(img, width=17*cm, height=7.5*cm))
+            story.append(Spacer(1, 0.3*cm))
+
+        story.append(Paragraph("Métricas estadísticas por activo", h3))
+        if 'stat' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['stat'], font_size=6.5))
+            story.append(Spacer(1, 0.3*cm))
+
+        story.append(Paragraph("Análisis de percentiles (precio LN)", h3))
+        if 'percentiles' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['percentiles'], font_size=6.5))
+            story.append(Spacer(1, 0.3*cm))
+
+        story.append(Paragraph("Resumen de valoración estadística", h3))
+        if 'resumen' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['resumen'], font_size=7))
+        story.append(PageBreak())
+
+        # ── Bloque Técnico ──
+        story.append(Paragraph("Bloque Técnico", h2))
+
+        story.append(Paragraph("Medias Móviles — Tabla resumen", h3))
+        if 'mm' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['mm'], font_size=7))
+            story.append(Spacer(1, 0.3*cm))
+
+        story.append(Paragraph("MACD — Tabla resumen", h3))
+        if 'macd' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['macd'], font_size=7))
+            story.append(Spacer(1, 0.3*cm))
+
+        story.append(Paragraph("RSI — Tabla resumen", h3))
+        if 'rsi' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['rsi'], font_size=7))
+            story.append(Spacer(1, 0.3*cm))
+
+        story.append(Paragraph("Fibonacci (ZigZag) — Niveles detectados", h3))
+        if 'fib' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['fib'], font_size=6.5))
+        story.append(PageBreak())
+
+        # ── Consenso Técnico ──
+        story.append(Paragraph("Consenso Técnico", h2))
+        if 'consenso' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['consenso'], font_size=7))
+        story.append(Spacer(1, 0.4*cm))
+
+        # ── Consolidado Final ──
+        story.append(Paragraph("Consolidado Final — Decisión", h2))
+        if 'consolidado' in pdata['tables']:
+            story.append(df_to_pdf_table(pdata['tables']['consolidado'], font_size=6))
+            story.append(Spacer(1, 0.4*cm))
+
+        if 'score' in pdata['figs']:
+            img = plotly_to_image(pdata['figs']['score'], width=900, height=450)
+            story.append(RLImage(img, width=17*cm, height=8.5*cm))
+
+        story.append(PageBreak())
+
+    # Footer en última página
+    story.append(Spacer(1, 1*cm))
+    story.append(Paragraph(
+        f"<i>Reporte generado el {datetime.now().strftime('%Y-%m-%d %H:%M')} — "
+        "Quant Dashboard · Datos: Yahoo Finance / Excel</i>",
+        small
+    ))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 
 # ─────────────────────────────────────────────
 # SIDEBAR
@@ -644,6 +1066,20 @@ with st.sidebar:
     if macd_fast >= macd_slow:
         st.warning("⚠️ MACD Fast debe ser menor que Slow")
 
+    # Fibonacci ZigZag
+    st.markdown('<div class="section-header">FIBONACCI (ZIGZAG)</div>', unsafe_allow_html=True)
+    fib_reversal_pct = st.number_input(
+        "% reversión mínima",
+        min_value=1.0, max_value=30.0, value=5.0, step=0.5,
+        help="% de movimiento contrario para confirmar cambio de tendencia. "
+             "Más alto = swings más significativos. 3% para índices, 5-10% para acciones volátiles."
+    ) / 100
+    fib_min_duration = st.number_input(
+        "Duración mínima swing (días)",
+        min_value=5, max_value=365, value=30, step=5,
+        help="Días mínimos entre pivotes. Evita detectar swings muy cortos."
+    )
+
     # Threshold estadístico (para convertir suma_producto en voto -1/0/+1)
     st.markdown('<div class="section-header">UMBRAL ESTADÍSTICO</div>', unsafe_allow_html=True)
     stat_threshold = st.number_input(
@@ -673,6 +1109,10 @@ st.markdown("---")
 if not run_btn:
     st.info("Configura los parámetros en el panel izquierdo y presiona **EJECUTAR ANÁLISIS**.")
     st.stop()
+
+# Limpiar PDF anterior al ejecutar un análisis nuevo
+if 'pdf_buffer' in st.session_state:
+    del st.session_state['pdf_buffer']
 
 if not periodos_sel:
     st.warning("Selecciona al menos un período.")
@@ -798,6 +1238,42 @@ st.dataframe(pd.DataFrame(nombres_rows).set_index("Ticker"), use_container_width
 # Tabs por período
 tabs = st.tabs(periodos_sel)
 
+# Estructura acumuladora para PDF (se llena dentro del loop y persiste en session_state)
+report_data = {
+    'meta': {
+        'tickers':           tickers_input,
+        'benchmark':         benchmark_col,
+        'fecha_ini':         prices_full.index[0].strftime("%Y-%m-%d"),
+        'fecha_fin':         prices_full.index[-1].strftime("%Y-%m-%d"),
+        'nombres':           nombres,
+        'activos':           activos_lista,
+        'activo_limitante':  activo_limitante if activo_limitante != "—" else None,
+        'fecha_corte':       fecha_corte.strftime("%Y-%m-%d") if fecha_corte is not None else None,
+        'config': {
+            'w_stat_total':       w_stat_total,
+            'w_tec_total':        w_tec_total,
+            'w_reg':              w_reg,
+            'w_pct':              w_pct,
+            'mm_w':               mm_w,
+            'rsi_w':              rsi_w,
+            'macd_w':             macd_w,
+            'fib_w':              fib_w,
+            'mm_periods':         mm_periods,
+            'rsi_period':         rsi_period,
+            'rsi_buy_threshold':  rsi_buy_threshold,
+            'rsi_sell_threshold': rsi_sell_threshold,
+            'macd_fast':          macd_fast,
+            'macd_slow':          macd_slow,
+            'macd_signal':        macd_signal,
+            'fib_reversal_pct':   fib_reversal_pct,
+            'fib_min_duration':   fib_min_duration,
+            'stat_threshold':     stat_threshold,
+            'final_threshold':    final_threshold,
+        },
+    },
+    'periodos': {},
+}
+
 for tab, periodo_label in zip(tabs, periodos_sel):
     with tab:
         # ── Filtrar por período (sobre los datos ya cargados y unificados) ──
@@ -915,7 +1391,9 @@ for tab, periodo_label in zip(tabs, periodos_sel):
             rsi_sum      = get_rsi_summary(rsi_sig_i)
             rsi_last     = rsi_series_i.dropna().iloc[-1] if len(rsi_series_i.dropna()) > 0 else np.nan
 
-            fib_sig_i, fib_levels_i = get_fib_signal(p_tec_i)
+            fib_sig_i, fib_levels_i, fib_meta_i = get_fib_signal(
+                p_tec_i, reversal_pct=fib_reversal_pct, min_duration_days=fib_min_duration
+            )
             fib_sum                 = get_fib_summary(fib_sig_i)
 
             tec_cache[col] = {
@@ -923,7 +1401,7 @@ for tab, periodo_label in zip(tabs, periodos_sel):
                 "mm_df": mm_df_i, "mm_sigs": mm_sigs_i, "mm_sum": mm_sum,
                 "macd_df": macd_df_i, "macd_sig": macd_sig_i, "macd_sum": macd_sum,
                 "rsi": rsi_series_i, "rsi_sig": rsi_sig_i, "rsi_sum": rsi_sum, "rsi_last": rsi_last,
-                "fib_sig": fib_sig_i, "fib_levels": fib_levels_i, "fib_sum": fib_sum,
+                "fib_sig": fib_sig_i, "fib_levels": fib_levels_i, "fib_meta": fib_meta_i, "fib_sum": fib_sum,
                 "last_price": p_tec_i.iloc[-1] if len(p_tec_i) > 0 else np.nan,
             }
 
@@ -1054,7 +1532,7 @@ for tab, periodo_label in zip(tabs, periodos_sel):
         ticker_fib = st.selectbox("Ver gráfica de Fibonacci:", options=activos, key=f"fib_sel_{periodo_label}")
         if ticker_fib:
             c = tec_cache[ticker_fib]
-            st.plotly_chart(fig_fibonacci(c["p_tec"], c["fib_levels"], ticker_fib),
+            st.plotly_chart(fig_fibonacci(c["p_tec"], c["fib_levels"], ticker_fib, meta=c["fib_meta"]),
                             use_container_width=True,
                             key=f"fib_chart_{periodo_label}_{ticker_fib}")
             sig = c["fib_sig"]
@@ -1245,6 +1723,31 @@ for tab, periodo_label in zip(tabs, periodos_sel):
         consol_df_for_excel = df_consol.copy()
 
         # ════════════════════════════════════════════
+        # ACUMULAR DATOS PARA INFORME PDF
+        # ════════════════════════════════════════════
+        report_data['periodos'][periodo_label] = {
+            'figs': {
+                'base100': fig_base100(base100, benchmark_col),
+                'corr':    fig_correlacion(ln_prices, stats_result, benchmark_col) if activos else None,
+                'score':   fig_score,
+            },
+            'tables': {
+                'stat':         df_stat,
+                'percentiles':  pd.DataFrame(pct_rows).T,
+                'resumen':      df_resumen,
+                'mm':           pd.DataFrame(mm_table).set_index("Activo"),
+                'macd':         pd.DataFrame(macd_table).set_index("Activo"),
+                'rsi':          pd.DataFrame(rsi_table).set_index("Activo"),
+                'fib':          pd.DataFrame(fib_table).set_index("Activo"),
+                'consenso':     pd.DataFrame(consenso_table).set_index("Activo"),
+                'consolidado':  df_consol,
+            },
+        }
+
+        # Guardar en session_state para que persista al hacer clic en botón PDF
+        st.session_state['report_data'] = report_data
+
+        # ════════════════════════════════════════════
         # EXPORTAR A EXCEL
         # ════════════════════════════════════════════
         st.markdown(f'<div class="section-header">📥 EXPORTAR A EXCEL — {periodo_label}</div>',
@@ -1289,8 +1792,10 @@ for tab, periodo_label in zip(tabs, periodos_sel):
                 sheet_rsi = f'RSI_{col}'[:31]
                 rsi_export.to_frame(name=f'RSI_{rsi_period}').to_excel(writer, sheet_name=sheet_rsi)
 
-                # Fibonacci
-                fib_levels_export = calc_fibonacci(p_tec)[0]
+                # Fibonacci (con parámetros ZigZag)
+                fib_levels_export = calc_fibonacci(p_tec,
+                                                   reversal_pct=fib_reversal_pct,
+                                                   min_duration_days=fib_min_duration)[0]
                 sheet_fib = f'Fib_{col}'[:31]
                 pd.DataFrame(list(fib_levels_export.items()),
                              columns=['Nivel', 'Precio']).to_excel(writer, sheet_name=sheet_fib, index=False)
@@ -1304,6 +1809,48 @@ for tab, periodo_label in zip(tabs, periodos_sel):
             use_container_width=True,
             key=f"download_{periodo_label}"
         )
+
+st.markdown("---")
+st.markdown('<div class="section-header">📄 INFORME PDF — TODOS LOS PERÍODOS</div>',
+            unsafe_allow_html=True)
+
+# Generar PDF automáticamente después del análisis y guardarlo en session_state
+if 'report_data' in st.session_state and st.session_state['report_data']['periodos']:
+    # Si no hay PDF generado aún o los datos cambiaron, generarlo automáticamente
+    if 'pdf_buffer' not in st.session_state:
+        with st.spinner("Construyendo informe PDF (esto puede tardar un momento)..."):
+            try:
+                pdf_buf = build_pdf_report(st.session_state['report_data'])
+                st.session_state['pdf_buffer'] = pdf_buf.getvalue()
+                st.success("✅ Informe PDF generado correctamente.")
+            except Exception as e:
+                st.error(f"❌ Error generando PDF: {e}")
+                st.exception(e)
+
+    # Mostrar botón de descarga si el PDF ya existe en session_state
+    if 'pdf_buffer' in st.session_state:
+        st.download_button(
+            label="⬇  DESCARGAR INFORME PDF COMPLETO",
+            data=st.session_state['pdf_buffer'],
+            file_name=f"quant_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key="download_pdf_final"
+        )
+
+    # Botón para regenerar (si el usuario cambió parámetros)
+    if st.button("🔄  REGENERAR PDF", use_container_width=True, key="regen_pdf_btn"):
+        with st.spinner("Regenerando informe PDF..."):
+            try:
+                pdf_buf = build_pdf_report(st.session_state['report_data'])
+                st.session_state['pdf_buffer'] = pdf_buf.getvalue()
+                st.success("✅ PDF regenerado correctamente.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error regenerando PDF: {e}")
+                st.exception(e)
+else:
+    st.info("Ejecuta el análisis primero para generar el informe PDF.")
 
 st.markdown("---")
 st.caption("Quant Dashboard · Análisis técnico y estadístico · Datos: Yahoo Finance / Excel")
