@@ -295,14 +295,20 @@ def calc_precio_valorado(stats_result, w_reg, w_pct):
 # ─────────────────────────────────────────────
 # ANALISIS TECNICO
 # ─────────────────────────────────────────────
-def calc_mm(prices_series):
+MM_DEFAULT_PERIODS = [5, 20, 100, 200]
+
+def calc_mm(prices_series, periods=None):
+    if periods is None:
+        periods = MM_DEFAULT_PERIODS
     df = pd.DataFrame({"price": prices_series})
-    for w in [5, 20, 100, 200]:
+    for w in periods:
         df[f"MM{w}"] = df["price"].rolling(w).mean()
     return df
 
-def get_mm_signal(df):
+def get_mm_signal(df, periods=None):
     """Devuelve señal basada en cruce precio vs MMs y cruce entre MMs."""
+    if periods is None:
+        periods = MM_DEFAULT_PERIODS
     signals = []
     if len(df) < 2:
         return ["⏸ HOLD: Datos insuficientes"]
@@ -311,7 +317,7 @@ def get_mm_signal(df):
     prev = df.iloc[-2]
 
     p = last["price"]
-    for w in [5, 20, 100, 200]:
+    for w in periods:
         col = f"MM{w}"
         if col not in df.columns or pd.isna(last[col]) or pd.isna(prev[col]):
             continue
@@ -320,8 +326,11 @@ def get_mm_signal(df):
         elif prev["price"] > prev[col] and p < last[col]:
             signals.append(f"🔴 VENTA: Precio cruzó MM{w} a la baja")
 
-    # Cruces entre MMs (golden/death cross)
-    pairs = [(5,20),(20,100),(50,200),(20,200)]
+    # Cruces entre MMs (golden/death cross) — se generan pares (fast, slow) consecutivos
+    sorted_periods = sorted(periods)
+    pairs = [(sorted_periods[i], sorted_periods[j])
+             for i in range(len(sorted_periods))
+             for j in range(i+1, len(sorted_periods))]
     for fast, slow in pairs:
         cf, cs = f"MM{fast}", f"MM{slow}"
         if cf not in df.columns or cs not in df.columns:
@@ -386,21 +395,21 @@ def calc_rsi(prices_series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def get_rsi_signal(rsi_series):
+def get_rsi_signal(rsi_series, buy_th=30, sell_th=70):
     rsi_clean = rsi_series.dropna()
     if len(rsi_clean) < 2:
         return "⏸ HOLD: Datos insuficientes"
     last = rsi_clean.iloc[-1]
     prev = rsi_clean.iloc[-2]
-    if prev >= 30 and last < 30:
+    if prev >= buy_th and last < buy_th:
         return f"🔴 VENTA/SOBREVENDIDO: RSI = {last:.1f}"
-    elif prev <= 30 and last > 30:
+    elif prev <= buy_th and last > buy_th:
         return f"✅ COMPRA: RSI salió de zona sobrevendida = {last:.1f}"
-    elif prev <= 70 and last > 70:
+    elif prev <= sell_th and last > sell_th:
         return f"🔴 VENTA: RSI entró zona sobrecompra = {last:.1f}"
-    elif last < 30:
+    elif last < buy_th:
         return f"⏸ SOBREVENDIDO: RSI = {last:.1f} (posible rebote)"
-    elif last > 70:
+    elif last > sell_th:
         return f"⏸ SOBRECOMPRADO: RSI = {last:.1f} (posible corrección)"
     else:
         return f"⏸ HOLD: RSI = {last:.1f} (zona neutral)"
@@ -473,16 +482,18 @@ def fig_base100(base100, benchmark_col):
     fig.update_layout(title="Base 100", **DARK_LAYOUT)
     return fig
 
-def fig_mm(mm_df, ticker):
+def fig_mm(mm_df, ticker, periods=None):
+    if periods is None:
+        periods = MM_DEFAULT_PERIODS
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=mm_df.index, y=mm_df["price"], name="Precio",
                              line=dict(color="#e2e8f0", width=1.5)))
-    palette = ["#63b3ed","#68d391","#f6ad55","#fc8181"]
-    for i, w in enumerate([5, 20, 100, 200]):
+    palette = ["#63b3ed","#68d391","#f6ad55","#fc8181","#b794f4","#76e4f7","#9ae6b4","#fbd38d"]
+    for i, w in enumerate(periods):
         col = f"MM{w}"
         if col in mm_df.columns:
             fig.add_trace(go.Scatter(x=mm_df.index, y=mm_df[col], name=f"MM {w}",
-                                     line=dict(color=palette[i], width=1, dash="dot")))
+                                     line=dict(color=palette[i % len(palette)], width=1, dash="dot")))
     fig.update_layout(title=f"Medias Móviles — {ticker}", **DARK_LAYOUT)
     return fig
 
@@ -510,16 +521,16 @@ def fig_macd(macd_df, ticker):
     fig.update_yaxes(gridcolor="#1e2535")
     return fig
 
-def fig_rsi(rsi_series, ticker):
+def fig_rsi(rsi_series, ticker, period=14, buy_th=30, sell_th=70):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=rsi_series.index, y=rsi_series, name="RSI",
                              line=dict(color="#b794f4", width=1.5)))
-    fig.add_hline(y=70, line=dict(color="#fc8181", dash="dash", width=1))
-    fig.add_hline(y=30, line=dict(color="#68d391", dash="dash", width=1))
-    fig.add_hrect(y0=70, y1=100, fillcolor="#fc8181", opacity=0.05, line_width=0)
-    fig.add_hrect(y0=0,  y1=30,  fillcolor="#68d391", opacity=0.05, line_width=0)
+    fig.add_hline(y=sell_th, line=dict(color="#fc8181", dash="dash", width=1))
+    fig.add_hline(y=buy_th,  line=dict(color="#68d391", dash="dash", width=1))
+    fig.add_hrect(y0=sell_th, y1=100, fillcolor="#fc8181", opacity=0.05, line_width=0)
+    fig.add_hrect(y0=0,       y1=buy_th, fillcolor="#68d391", opacity=0.05, line_width=0)
     layout = {**DARK_LAYOUT, "yaxis": dict(range=[0,100], gridcolor="#1e2535", showgrid=True)}
-    fig.update_layout(title=f"RSI(14) — {ticker}", **layout)
+    fig.update_layout(title=f"RSI({period}) — {ticker} [buy≤{buy_th} / sell≥{sell_th}]", **layout)
     return fig
 
 def fig_fibonacci(prices_series, levels, ticker):
@@ -555,7 +566,7 @@ with st.sidebar:
     if fuente == "Yahoo Finance":
         raw_input = st.text_input(
             "Tickers (separados por coma — el último es el benchmark)",
-            value="AAPL, MSFT, GOOGL, SPY"
+            value="AAPL, ^GSPC"
         )
         tickers_input = [t.strip().upper() for t in raw_input.split(",") if t.strip()]
     else:
@@ -590,6 +601,66 @@ with st.sidebar:
     fib_w  = st.slider("Fibonacci (%)", 0, 100, 49, step=1)
     total_tec = mm_w + rsi_w + macd_w + fib_w
     st.caption(f"Total técnico: {total_tec}% {'✅' if total_tec==100 else '⚠️ ≠100%'}")
+
+    # ─────────────────────────────────────────────
+    # PARÁMETROS DE INDICADORES (períodos)
+    # ─────────────────────────────────────────────
+    st.markdown('<div class="section-header">PARÁMETROS INDICADORES</div>', unsafe_allow_html=True)
+
+    # Medias Móviles
+    mm_periods_str = st.text_input(
+        "Períodos MM (separados por coma)",
+        value="5, 20, 100, 200",
+        help="Ejemplo: 20, 30, 40 — generará MM20, MM30, MM40"
+    )
+    try:
+        mm_periods = sorted({int(x.strip()) for x in mm_periods_str.split(",") if x.strip().isdigit() and int(x.strip()) > 0})
+        if not mm_periods:
+            mm_periods = MM_DEFAULT_PERIODS
+            st.warning(f"Períodos MM inválidos. Usando default: {MM_DEFAULT_PERIODS}")
+    except Exception:
+        mm_periods = MM_DEFAULT_PERIODS
+        st.warning(f"Períodos MM inválidos. Usando default: {MM_DEFAULT_PERIODS}")
+    st.caption(f"MMs activas: {mm_periods}")
+
+    # RSI
+    rsi_period = st.number_input("Período RSI", min_value=2, max_value=200, value=14, step=1)
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        rsi_buy_threshold  = st.number_input("RSI Compra (≤)", min_value=1,  max_value=99, value=30, step=1)
+    with col_r2:
+        rsi_sell_threshold = st.number_input("RSI Venta (≥)",  min_value=1,  max_value=99, value=70, step=1)
+    if rsi_buy_threshold >= rsi_sell_threshold:
+        st.warning("⚠️ RSI Compra debe ser menor que RSI Venta")
+
+    # MACD
+    col_mc1, col_mc2, col_mc3 = st.columns(3)
+    with col_mc1:
+        macd_fast = st.number_input("MACD Fast", min_value=2, max_value=200, value=12, step=1)
+    with col_mc2:
+        macd_slow = st.number_input("MACD Slow", min_value=2, max_value=200, value=26, step=1)
+    with col_mc3:
+        macd_signal = st.number_input("MACD Signal", min_value=2, max_value=200, value=9, step=1)
+    if macd_fast >= macd_slow:
+        st.warning("⚠️ MACD Fast debe ser menor que Slow")
+
+    # Threshold estadístico (para convertir suma_producto en voto -1/0/+1)
+    st.markdown('<div class="section-header">UMBRAL ESTADÍSTICO</div>', unsafe_allow_html=True)
+    stat_threshold = st.number_input(
+        "Umbral señal estadística (%)",
+        min_value=0.0, max_value=50.0, value=5.0, step=0.5,
+        help="Si potencial > +umbral → COMPRA. Si < -umbral → VENTA. En medio → HOLD."
+    ) / 100
+
+    # Threshold del score final consolidado
+    st.markdown('<div class="section-header">UMBRAL DECISIÓN FINAL</div>', unsafe_allow_html=True)
+    final_threshold = st.slider(
+        "Umbral score final (zona muerta alrededor de 0)",
+        min_value=0.0, max_value=1.0, value=0.35, step=0.05,
+        help="Score > +umbral → COMPRA. Score < -umbral → VENTA. Entre -umbral y +umbral → MANTENER. "
+             "Más alto = más exigente, más HOLD. Más bajo = más laxo, más señales."
+    )
+    st.caption(f"Zona MANTENER: score entre **{-final_threshold:+.2f}** y **{+final_threshold:+.2f}**")
 
     run_btn = st.button("▶  EJECUTAR ANÁLISIS", use_container_width=True)
 
@@ -831,16 +902,16 @@ for tab, periodo_label in zip(tabs, periodos_sel):
             else:
                 p_tec_i = prices[col].dropna()
 
-            mm_df_i   = calc_mm(p_tec_i)
-            mm_sigs_i = get_mm_signal(mm_df_i)
+            mm_df_i   = calc_mm(p_tec_i, periods=mm_periods)
+            mm_sigs_i = get_mm_signal(mm_df_i, periods=mm_periods)
             mm_sum    = get_mm_summary(mm_sigs_i)
 
-            macd_df_i  = calc_macd(p_tec_i)
+            macd_df_i  = calc_macd(p_tec_i, fast=macd_fast, slow=macd_slow, signal=macd_signal)
             macd_sig_i = get_macd_signal(macd_df_i)
             macd_sum   = get_macd_summary(macd_sig_i)
 
-            rsi_series_i = calc_rsi(p_tec_i, period=14)
-            rsi_sig_i    = get_rsi_signal(rsi_series_i)
+            rsi_series_i = calc_rsi(p_tec_i, period=rsi_period)
+            rsi_sig_i    = get_rsi_signal(rsi_series_i, buy_th=rsi_buy_threshold, sell_th=rsi_sell_threshold)
             rsi_sum      = get_rsi_summary(rsi_sig_i)
             rsi_last     = rsi_series_i.dropna().iloc[-1] if len(rsi_series_i.dropna()) > 0 else np.nan
 
@@ -859,27 +930,27 @@ for tab, periodo_label in zip(tabs, periodos_sel):
         # ════════════════════════════════════════════
         # MEDIAS MÓVILES
         # ════════════════════════════════════════════
-        st.markdown("### 📊 Medias Móviles")
+        st.markdown(f"### 📊 Medias Móviles ({', '.join(str(p) for p in mm_periods)})")
         mm_table = []
         for col in activos:
             c = tec_cache[col]
             mm_last = c["mm_df"].iloc[-1]
-            mm_table.append({
+            row = {
                 "Activo": col,
                 "Nombre": nombres.get(col, col),
                 "Precio":  f"${c['last_price']:.2f}",
-                "MM 5":   f"${mm_last['MM5']:.2f}"   if pd.notna(mm_last['MM5'])   else "—",
-                "MM 20":  f"${mm_last['MM20']:.2f}"  if pd.notna(mm_last['MM20'])  else "—",
-                "MM 100": f"${mm_last['MM100']:.2f}" if pd.notna(mm_last['MM100']) else "—",
-                "MM 200": f"${mm_last['MM200']:.2f}" if pd.notna(mm_last['MM200']) else "—",
-                "Señal":  c["mm_sum"],
-            })
+            }
+            for w in mm_periods:
+                key = f"MM{w}"
+                row[f"MM {w}"] = f"${mm_last[key]:.2f}" if pd.notna(mm_last[key]) else "—"
+            row["Señal"] = c["mm_sum"]
+            mm_table.append(row)
         st.dataframe(pd.DataFrame(mm_table).set_index("Activo"), use_container_width=True)
 
         ticker_mm = st.selectbox("Ver gráfica de MM:", options=activos, key=f"mm_sel_{periodo_label}")
         if ticker_mm:
             c = tec_cache[ticker_mm]
-            st.plotly_chart(fig_mm(c["mm_df"], ticker_mm), use_container_width=True,
+            st.plotly_chart(fig_mm(c["mm_df"], ticker_mm, periods=mm_periods), use_container_width=True,
                             key=f"mm_chart_{periodo_label}_{ticker_mm}")
             for sig in c["mm_sigs"]:
                 if "COMPRA" in sig or "GOLDEN" in sig:
@@ -892,7 +963,7 @@ for tab, periodo_label in zip(tabs, periodos_sel):
         # ════════════════════════════════════════════
         # MACD
         # ════════════════════════════════════════════
-        st.markdown("### 📊 MACD (12, 26, 9)")
+        st.markdown(f"### 📊 MACD ({macd_fast}, {macd_slow}, {macd_signal})")
         macd_table = []
         for col in activos:
             c = tec_cache[col]
@@ -923,7 +994,7 @@ for tab, periodo_label in zip(tabs, periodos_sel):
         # ════════════════════════════════════════════
         # RSI
         # ════════════════════════════════════════════
-        st.markdown("### 📊 RSI (14)")
+        st.markdown(f"### 📊 RSI ({rsi_period})")
         rsi_table = []
         for col in activos:
             c = tec_cache[col]
@@ -946,7 +1017,9 @@ for tab, periodo_label in zip(tabs, periodos_sel):
         ticker_rsi = st.selectbox("Ver gráfica de RSI:", options=activos, key=f"rsi_sel_{periodo_label}")
         if ticker_rsi:
             c = tec_cache[ticker_rsi]
-            st.plotly_chart(fig_rsi(c["rsi"], ticker_rsi), use_container_width=True,
+            st.plotly_chart(fig_rsi(c["rsi"], ticker_rsi, period=rsi_period,
+                                     buy_th=rsi_buy_threshold, sell_th=rsi_sell_threshold),
+                            use_container_width=True,
                             key=f"rsi_chart_{periodo_label}_{ticker_rsi}")
             sig = c["rsi_sig"]
             if "COMPRA" in sig:
@@ -1020,32 +1093,156 @@ for tab, periodo_label in zip(tabs, periodos_sel):
         st.dataframe(pd.DataFrame(consenso_table).set_index("Activo"), use_container_width=True)
 
         # ════════════════════════════════════════════
-        # BLOQUE 3: PONDERACIÓN FINAL
+        # BLOQUE 3: CONSOLIDADO FINAL — RECOMENDACIÓN
         # ════════════════════════════════════════════
-        st.markdown(f'<div class="section-header">⚖️ PONDERACIÓN FINAL — {periodo_label}</div>',
+        st.markdown(f'<div class="section-header">⚖️ CONSOLIDADO FINAL — {periodo_label}</div>',
                     unsafe_allow_html=True)
+
+        # Mapeo señal → voto
+        def signal_to_vote(sig):
+            if sig == "COMPRA": return 1
+            if sig == "VENTA":  return -1
+            return 0  # HOLD, MIXTO o cualquier otro
+
+        # Voto del bloque estadístico: depende del threshold
+        def stat_to_vote(suma_producto, threshold):
+            if suma_producto >  threshold: return 1
+            if suma_producto < -threshold: return -1
+            return 0
+
+        # Mapeo voto → etiqueta
+        def vote_label(v):
+            if v == 1:  return "COMPRA ▲"
+            if v == -1: return "VENTA ▼"
+            return "MANTENER ●"
+
+        # Verificación de pesos
+        total_tec_check = mm_w + rsi_w + macd_w + fib_w
+        if total_tec_check != 100:
+            st.warning(f"⚠️ Los pesos técnicos suman {total_tec_check}% (no 100%). "
+                       f"El score técnico se normaliza dividiendo por la suma real.")
+
         st.markdown(f"""
-        > Bloque Estadístico: **{w_stat_total*100:.0f}%** | Bloque Técnico: **{w_tec_total*100:.0f}%**
-        >
-        > *Nota: el bloque técnico genera señales cualitativas (compra/venta/hold).
-        > La ponderación numérica final requiere mapear esas señales a scores — 
-        > esto se habilitará en la siguiente versión cuando definas el scoring técnico.*
+        **Configuración aplicada:**
+        - Pesos macro → Estadístico: **{w_stat_total*100:.0f}%** | Técnico: **{w_tec_total*100:.0f}%**
+        - Pesos técnicos → MM: **{mm_w}%** | RSI: **{rsi_w}%** | MACD: **{macd_w}%** | Fib: **{fib_w}%**
+        - Umbral estadístico: **±{stat_threshold*100:.1f}%** (zona muerta alrededor de cero)
+        - Umbrales RSI: compra ≤ **{rsi_buy_threshold}** | venta ≥ **{rsi_sell_threshold}**
+        - Umbral decisión final: **±{final_threshold:.2f}** → MANTENER si score ∈ [{-final_threshold:+.2f}, {+final_threshold:+.2f}]
         """)
 
-        # Score estadístico ponderado
-        st.markdown("**Score estadístico ponderado por activo:**")
-        score_rows = []
+        # ───────── Construir tabla consolidada ─────────
+        consol_rows = []
+        # Normalización: si los pesos técnicos no suman 100, los dividimos por la suma real
+        tec_weights_sum = mm_w + rsi_w + macd_w + fib_w
+        if tec_weights_sum == 0:
+            tec_weights_sum = 1  # evita división por cero
+        w_mm_n   = mm_w   / tec_weights_sum
+        w_rsi_n  = rsi_w  / tec_weights_sum
+        w_macd_n = macd_w / tec_weights_sum
+        w_fib_n  = fib_w  / tec_weights_sum
+
         for col in activos:
+            c = tec_cache[col]
             s = stats_result[col]
-            score_stat = s["suma_producto"] * w_stat_total
-            score_rows.append({
-                "Activo": col,
-                "Pot. Val. Estadístico (%)": f"{s['suma_producto']*100:.2f}%",
-                "Ponderado Final (%)": f"{score_stat*100:.2f}%",
-                "Precio Actual": f"${s['last_price']:.2f}",
-                "Precio Valorado": f"${s['precio_valorado']:.2f}",
+
+            # Votos individuales
+            v_mm   = signal_to_vote(c["mm_sum"])
+            v_rsi  = signal_to_vote(c["rsi_sum"])
+            v_macd = signal_to_vote(c["macd_sum"])
+            v_fib  = signal_to_vote(c["fib_sum"])
+            v_stat = stat_to_vote(s["suma_producto"], stat_threshold)
+
+            # Score técnico ponderado [-1, +1]
+            score_tec = (v_mm * w_mm_n) + (v_rsi * w_rsi_n) + (v_macd * w_macd_n) + (v_fib * w_fib_n)
+
+            # Score estadístico ya está en [-1, +1] (vino del mapeo binario)
+            score_stat = v_stat
+
+            # Score final ponderado entre los dos bloques
+            score_final = score_stat * w_stat_total + score_tec * w_tec_total
+
+            # Recomendación final con zona muerta (umbral final_threshold)
+            # |score| < threshold → MANTENER
+            # score ≥ +threshold → COMPRA
+            # score ≤ -threshold → VENTA
+            if score_final >=  final_threshold:
+                rec_final = 1
+            elif score_final <= -final_threshold:
+                rec_final = -1
+            else:
+                rec_final = 0
+
+            consol_rows.append({
+                "Activo":         col,
+                "Nombre":         nombres.get(col, col),
+                "Estadístico":    f"{v_stat:+d} ({vote_label(v_stat)})",
+                "MM":             f"{v_mm:+d} ({c['mm_sum']})",
+                "RSI":            f"{v_rsi:+d} ({c['rsi_sum']})",
+                "MACD":           f"{v_macd:+d} ({c['macd_sum']})",
+                "Fibonacci":      f"{v_fib:+d} ({c['fib_sum']})",
+                "Score Técnico":  f"{score_tec:+.3f}",
+                "Score Estadístico": f"{score_stat:+.3f}",
+                "Score Final":    f"{score_final:+.3f}",
+                "RECOMENDACIÓN":  vote_label(rec_final),
             })
-        st.dataframe(pd.DataFrame(score_rows).set_index("Activo"), use_container_width=True)
+
+        df_consol = pd.DataFrame(consol_rows).set_index("Activo")
+
+        # Tabla con los votos absolutos y scores
+        st.markdown("### 📋 Tabla consolidada de votos y scores")
+        st.dataframe(df_consol, use_container_width=True)
+
+        # ───────── Tarjetas resumen por activo ─────────
+        st.markdown("### 🎯 Recomendación final por activo")
+        n_cols = min(len(activos), 3)
+        if n_cols > 0:
+            cols_cards = st.columns(n_cols)
+            for i, row in enumerate(consol_rows):
+                col_box = cols_cards[i % n_cols]
+                rec_text = row["RECOMENDACIÓN"]
+                score_f = row["Score Final"]
+                if "COMPRA" in rec_text:
+                    bg, border, color = "#1a3a2a", "#2f855a", "#68d391"
+                elif "VENTA" in rec_text:
+                    bg, border, color = "#3a1a1a", "#9b2c2c", "#fc8181"
+                else:
+                    bg, border, color = "#2a2a1a", "#975a16", "#fbd38d"
+                col_box.markdown(f"""
+                <div style="background:{bg}; border:1px solid {border}; border-radius:8px; padding:14px; margin:6px 0;">
+                  <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#a0aec0; text-transform:uppercase; letter-spacing:1px;">
+                    {row['Activo']} — {row['Nombre'][:25]}
+                  </div>
+                  <div style="font-family:'IBM Plex Mono',monospace; font-size:24px; font-weight:600; color:{color}; margin-top:6px;">
+                    {rec_text}
+                  </div>
+                  <div style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#a0aec0; margin-top:4px;">
+                    Score: <span style="color:{color}">{score_f}</span>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        # ───────── Gráfico de scores ─────────
+        st.markdown("### 📊 Visualización de scores")
+        score_vals = [float(r["Score Final"]) for r in consol_rows]
+        labels = [r["Activo"] for r in consol_rows]
+        bar_colors = ["#68d391" if v > 0 else ("#fc8181" if v < 0 else "#fbd38d") for v in score_vals]
+        fig_score = go.Figure(go.Bar(x=labels, y=score_vals, marker_color=bar_colors,
+                                     text=[f"{v:+.3f}" for v in score_vals], textposition="outside"))
+        fig_score.add_hline(y=0, line=dict(color="#4a5568", dash="solid", width=1))
+        # Líneas del umbral final (zona muerta)
+        fig_score.add_hline(y=+final_threshold, line=dict(color="#68d391", dash="dash", width=1),
+                            annotation_text=f"Compra ≥ {+final_threshold:+.2f}", annotation_position="right")
+        fig_score.add_hline(y=-final_threshold, line=dict(color="#fc8181", dash="dash", width=1),
+                            annotation_text=f"Venta ≤ {-final_threshold:+.2f}", annotation_position="right")
+        fig_score.add_hrect(y0=-final_threshold, y1=+final_threshold,
+                            fillcolor="#fbd38d", opacity=0.08, line_width=0)
+        layout_score = {**DARK_LAYOUT, "yaxis": dict(range=[-1.1, 1.1], gridcolor="#1e2535", showgrid=True)}
+        fig_score.update_layout(title="Score Final por Activo (rango [-1, +1])", **layout_score)
+        st.plotly_chart(fig_score, use_container_width=True, key=f"score_chart_{periodo_label}")
+
+        # Guardar consol_rows para usar en Excel
+        consol_df_for_excel = df_consol.copy()
 
         # ════════════════════════════════════════════
         # EXPORTAR A EXCEL
@@ -1068,7 +1265,7 @@ for tab, periodo_label in zip(tabs, periodos_sel):
             # Hoja 6: Percentiles
             pd.DataFrame(pct_rows).T.to_excel(writer, sheet_name='Percentiles')
             # Hoja 7: Resumen valoración
-            pd.DataFrame(score_rows).set_index("Activo").to_excel(writer, sheet_name='Valoración Final')
+            pd.DataFrame(consol_df_for_excel).to_excel(writer, sheet_name='Consolidado Final')
 
             # Hojas técnicas por activo
             for col in activos:
@@ -1078,19 +1275,19 @@ for tab, periodo_label in zip(tabs, periodos_sel):
                     p_tec = prices[col].dropna()
 
                 # MM
-                mm_df_export = calc_mm(p_tec)
+                mm_df_export = calc_mm(p_tec, periods=mm_periods)
                 sheet_mm = f'MM_{col}'[:31]  # Excel limita a 31 chars
                 mm_df_export.to_excel(writer, sheet_name=sheet_mm)
 
                 # MACD
-                macd_df_export = calc_macd(p_tec)
+                macd_df_export = calc_macd(p_tec, fast=macd_fast, slow=macd_slow, signal=macd_signal)
                 sheet_macd = f'MACD_{col}'[:31]
                 macd_df_export.to_excel(writer, sheet_name=sheet_macd)
 
                 # RSI
-                rsi_export = calc_rsi(p_tec, period=14)
+                rsi_export = calc_rsi(p_tec, period=rsi_period)
                 sheet_rsi = f'RSI_{col}'[:31]
-                rsi_export.to_frame(name='RSI').to_excel(writer, sheet_name=sheet_rsi)
+                rsi_export.to_frame(name=f'RSI_{rsi_period}').to_excel(writer, sheet_name=sheet_rsi)
 
                 # Fibonacci
                 fib_levels_export = calc_fibonacci(p_tec)[0]
