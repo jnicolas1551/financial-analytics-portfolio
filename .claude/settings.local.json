@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show *)",
+      "Bash(python dcf_dpz.py)",
+      "Bash(Get-ChildItem -Path \"D:\\\\Datos Usuario\\\\Documents\\\\PROYECTOS_CLAUDE\\\\ANALISIS_INSTITUCIONAL\" -Recurse -Filter \"*.xls*\")",
+      "Bash(Select-Object FullName, Name, Length)",
+      "PowerShell(python --version; python -c \"import oletools; print\\('oletools OK'\\)\" 2>&1)",
+      "PowerShell(python -m oletools.olevba \"D:\\\\Datos Usuario\\\\Documents\\\\UNIVERSIDAD\\\\SEMESTRE 1\\\\1.5 INVERSIONES\\\\3. SEMANA\\\\dpz_benchmarks ULTIMO V3.xlsb\" 2>&1)",
+      "PowerShell(pip show *)",
+      "Bash(python3 *)",
+      "Bash(pip install *)"
+    ]
+  }
+}
