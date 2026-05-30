@@ -21,6 +21,47 @@ from components.styles import COLORS
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Mapa de caracteres Unicode a equivalentes Latin-1 / ASCII para fpdf2
+_UNICODE_MAP = {
+    '—': '-',    # em dash —
+    '–': '-',    # en dash –
+    '‒': '-',    # figure dash
+    '’': "'",    # right single quotation '
+    '‘': "'",    # left single quotation '
+    '“': '"',    # left double quotation "
+    '”': '"',    # right double quotation "
+    '…': '...',  # ellipsis …
+    'é': 'e',    # é
+    'á': 'a',    # a
+    'í': 'i',    # i
+    'ó': 'o',    # o
+    'ú': 'u',    # u
+    'ñ': 'n',    # n~
+    'ü': 'u',    # u umlaut
+    'à': 'a',    'è': 'e',
+    'ì': 'i',    'ò': 'o',  'ù': 'u',
+    'â': 'a',    'ê': 'e',  'î': 'i',
+    'ô': 'o',    'û': 'u',
+    'ä': 'a',    'ë': 'e',  'ï': 'i',
+    'ö': 'o',    'ÿ': 'y',
+    'É': 'E',    'Á': 'A',  'Í': 'I',
+    'Ó': 'O',    'Ú': 'U',  'Ñ': 'N',
+    '®': '(R)',  '©': '(C)', '™': '(TM)',
+    '€': 'EUR',  '£': 'GBP', '¥': 'JPY',
+}
+
+def _s(text) -> str:
+    """Sanitiza texto a Latin-1 para fuentes built-in de fpdf2.
+    Reemplaza caracteres Unicode problemáticos con equivalentes ASCII."""
+    if text is None:
+        return ""
+    text = str(text)
+    for char, repl in _UNICODE_MAP.items():
+        text = text.replace(char, repl)
+    # Eliminar cualquier caracter restante fuera de Latin-1
+    return text.encode('latin-1', errors='ignore').decode('latin-1')
+
+
 def _fmt(v, mode="", default="N/A") -> str:
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return default
@@ -46,13 +87,18 @@ def _signal(current: float, target: float | None) -> tuple[str, float]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _Memo(FPDF):
-    """FPDF2 subclass con header/footer corporativo."""
+    """FPDF2 subclass con header/footer corporativo.
+    Sobreescribe cell y multi_cell para sanitizar strings a Latin-1 automaticamente."""
 
     def __init__(self, portfolio_name: str = "Portafolio"):
         super().__init__()
         self.portfolio_name = portfolio_name
         self.set_margins(18, 28, 18)
         self.set_auto_page_break(auto=True, margin=22)
+
+    def cell(self, w=0, h=0, txt="", border=0, ln=False, align="", fill=False, link=""):
+        # Sanitiza automaticamente todos los strings a Latin-1 (fpdf2 built-in fonts)
+        super().cell(w, h, _s(txt), border=border, ln=ln, align=align, fill=fill, link=link)
 
     def header(self):
         r, g, b = COLORS["pdf_primary"]
@@ -61,7 +107,7 @@ class _Memo(FPDF):
         self.set_font("Helvetica", "B", 10)
         self.set_text_color(255, 255, 255)
         self.set_xy(10, 6)
-        self.cell(0, 10, f"ANALISIS INSTITUCIONAL — {self.portfolio_name.upper()}", align="L")
+        self.cell(0, 10, _s(f"ANALISIS INSTITUCIONAL - {self.portfolio_name.upper()}"), align="L")
         self.set_text_color(0, 0, 0)
 
     def footer(self):
@@ -72,9 +118,9 @@ class _Memo(FPDF):
         self.set_font("Helvetica", "I", 7)
         self.set_text_color(120, 120, 120)
         fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.cell(0, 8,
+        self.cell(0, 8, _s(
                   f"Generado: {fecha}  |  Pagina {self.page_no()}  |  "
-                  "Modelo cuantitativo con datos Yahoo Finance. No constituye asesoria de inversion.",
+                  "Modelo cuantitativo con datos Yahoo Finance. No constituye asesoria de inversion."),
                   align="C")
         self.set_text_color(0, 0, 0)
 
@@ -85,7 +131,7 @@ def _section(pdf: _Memo, title: str):
     pdf.set_fill_color(r, g, b)
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(255, 255, 255)
-    pdf.cell(0, 8, f"  {title}", fill=True, ln=True)
+    pdf.cell(0, 8, _s(f"  {title}"), fill=True, ln=True)
     pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
 
@@ -97,14 +143,14 @@ def _kv(pdf: _Memo, label: str, value: str, alt: bool = False, highlight: str | 
         pdf.set_fill_color(255, 255, 255)
 
     pdf.set_font("Helvetica", "B", 8)
-    pdf.cell(72, 6.5, f"  {label}", border="LTB", fill=True)
+    pdf.cell(72, 6.5, _s(f"  {label}"), border="LTB", fill=True)
 
     pdf.set_font("Helvetica", "", 8)
     if highlight == "pos":
         pdf.set_text_color(*COLORS["pdf_positive"])
     elif highlight == "neg":
         pdf.set_text_color(*COLORS["pdf_negative"])
-    pdf.cell(100, 6.5, f"  {value}", border="RTB", fill=True, ln=True)
+    pdf.cell(100, 6.5, _s(f"  {value}"), border="RTB", fill=True, ln=True)
     pdf.set_text_color(0, 0, 0)
 
 
@@ -451,7 +497,7 @@ def generate_pdf(portfolio: dict, portfolio_name: str = "Portafolio") -> bytes:
     _section(pdf, "DISCLAIMER Y METODOLOGIA")
     pdf.set_font("Helvetica", "", 8)
     pdf.set_text_color(80, 80, 80)
-    pdf.multi_cell(0, 5,
+    disclaimer = _s(
         "Este documento ha sido generado de forma automatica mediante modelos cuantitativos "
         "de valoracion (DCF y analisis de comparables) con datos obtenidos de Yahoo Finance "
         "(yfinance). Los resultados son de caracter informativo y educativo UNICAMENTE.\n\n"
@@ -465,7 +511,9 @@ def generate_pdf(portfolio: dict, portfolio_name: str = "Portafolio") -> bytes:
         "Kd implicita sobre deuda financiera.\n\n"
         "Metodologia Multiplos: precio implicito por EV/EBITDA, P/E y EV/Revenue aplicando "
         "la mediana del grupo de peers del mismo sector. "
-        "Precio combinado ponderado por los pesos definidos por el usuario.")
+        "Precio combinado ponderado por los pesos definidos por el usuario."
+    )
+    pdf.multi_cell(0, 5, disclaimer)
 
     return bytes(pdf.output())
 
