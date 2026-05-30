@@ -85,15 +85,17 @@ def chart_fcf_projection(dcf: dict, ticker: str) -> go.Figure:
 
 def chart_wacc_waterfall(wacc: dict, ticker: str) -> go.Figure:
     """Waterfall del WACC mostrando componentes."""
-    rf   = wacc["rf"]
-    beta = wacc["beta"]
-    mp   = wacc["mkt_premium"]
-    crp  = wacc["crp"]
-    ke   = wacc["ke"]
-    kd   = wacc["kd"]
-    we   = wacc["weight_equity"]
-    wd   = wacc["weight_debt"]
-    wacc_val = wacc["wacc"]
+    rf       = wacc.get("rf", 0.045)
+    beta     = wacc.get("beta", 1.0)
+    mp       = wacc.get("mkt_premium", 0.055)
+    crp      = wacc.get("crp", 0.0)
+    ke       = wacc.get("ke", 0.0)
+    kd       = wacc.get("kd", 0.0)
+    we       = wacc.get("weight_equity", 0.7)
+    wd       = wacc.get("weight_debt", 0.3)
+    wacc_val = wacc.get("wacc", 0.0)
+    if not wacc_val:
+        return go.Figure()
 
     labels = ["Rf", "β × Prima", "Prima Pais", "Ke", "Kd×Wd×(1-t)", "WACC"]
     values = [rf, beta * mp, crp, -(rf + beta*mp + crp), kd * wd, 0]

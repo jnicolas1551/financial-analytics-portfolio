@@ -26,9 +26,12 @@ def get_fx_rate(from_ccy: str, to_ccy: str = "USD") -> float:
     if from_ccy == to_ccy:
         return 1.0
     try:
-        pair = f"{from_ccy}{to_ccy}=X"
-        ticker = yf.Ticker(pair)
-        rate = ticker.fast_info.get("last_price") or ticker.info.get("regularMarketPrice")
+        pair   = f"{from_ccy}{to_ccy}=X"
+        stock  = yf.Ticker(pair)
+        # fast_info es un objeto FastInfo, no un dict — usar getattr
+        rate   = getattr(stock.fast_info, "last_price", None)
+        if not rate:
+            rate = stock.info.get("regularMarketPrice")
         return float(rate) if rate else 1.0
     except Exception:
         return 1.0

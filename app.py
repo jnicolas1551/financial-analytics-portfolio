@@ -357,7 +357,11 @@ def render_overview(portfolio: dict):
         if v == "VENTA":   return "color: #FF1744; font-weight: bold"
         return "color: #FFD600; font-weight: bold"
 
-    styled = df.style.applymap(_color_signal, subset=["Senal"])
+    # pandas 3.0 reemplaza applymap por map
+    try:
+        styled = df.style.map(_color_signal, subset=["Senal"])
+    except Exception:
+        styled = df  # fallback sin estilos si falla
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
@@ -424,10 +428,13 @@ def render_company_tab(ticker: str, data: dict, params: dict):
 
     # ── Grafica precio historico ─────────────────────────────────────────────
     st.markdown("")
-    st.plotly_chart(
-        chart_price_history(history, ticker, po_d, po_m),
-        use_container_width=True,
-    )
+    try:
+        st.plotly_chart(
+            chart_price_history(history, ticker, po_d, po_m),
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.caption(f"Grafica precio no disponible: {e}")
 
     # ── DCF ─────────────────────────────────────────────────────────────────
     st.markdown(section_title("Valoracion DCF — Flujos de Caja Descontados"), unsafe_allow_html=True)
@@ -457,7 +464,10 @@ def render_company_tab(ticker: str, data: dict, params: dict):
                 {"Componente": "Peso deuda",        "Valor": _fmt_pct(wacc_d.get("weight_debt"))},
             ])
             st.dataframe(wacc_table, hide_index=True, use_container_width=True)
-            st.plotly_chart(chart_wacc_waterfall(wacc_d, ticker), use_container_width=True)
+            try:
+                st.plotly_chart(chart_wacc_waterfall(wacc_d, ticker), use_container_width=True)
+            except Exception:
+                pass
 
         with col_r:
             st.markdown("**Resultados DCF**")
@@ -476,16 +486,22 @@ def render_company_tab(ticker: str, data: dict, params: dict):
             st.dataframe(dcf_table, hide_index=True, use_container_width=True)
 
         # Proyeccion FCF
-        st.plotly_chart(chart_fcf_projection(dcf, ticker), use_container_width=True)
+        try:
+            st.plotly_chart(chart_fcf_projection(dcf, ticker), use_container_width=True)
+        except Exception:
+            pass
 
         # Sensibilidad
         if sens is not None and not sens.empty:
             st.markdown(section_title("Tabla de Sensibilidad — WACC × g terminal"), unsafe_allow_html=True)
             st.caption(f"Precio actual: **{_fmt_price(cp, ccy)}** | Verde = por encima del precio actual, Rojo = por debajo")
-            st.plotly_chart(
-                chart_sensitivity_heatmap(sens, ticker, cp),
-                use_container_width=True,
-            )
+            try:
+                st.plotly_chart(
+                    chart_sensitivity_heatmap(sens, ticker, cp),
+                    use_container_width=True,
+                )
+            except Exception:
+                pass
     else:
         err = (dcf or {}).get("error", "Sin datos de FCF disponibles.")
         st.warning(f"⚠️ DCF no calculado: {err}")
@@ -533,28 +549,42 @@ def render_company_tab(ticker: str, data: dict, params: dict):
         col_g1, col_g2 = st.columns([3, 2])
         with col_g1:
             if not peer_df.empty:
-                st.plotly_chart(
-                    chart_peer_comparison(peer_df, mult.get("target_vals", {}), ticker),
-                    use_container_width=True,
-                )
+                try:
+                    st.plotly_chart(
+                        chart_peer_comparison(peer_df, mult.get("target_vals", {}), ticker),
+                        use_container_width=True,
+                    )
+                except Exception:
+                    pass
         with col_g2:
             if eff:
-                st.plotly_chart(chart_efficiency_bars(eff, ticker), use_container_width=True)
+                try:
+                    st.plotly_chart(chart_efficiency_bars(eff, ticker), use_container_width=True)
+                except Exception:
+                    pass
 
         # Tabla peers detallada
         if not peer_df.empty:
             st.markdown("**Tabla de peers**")
 
             def _style_peer(df):
-                return df.style.format({
-                    "EV/EBITDA":  lambda x: f"{x:.1f}x" if pd.notna(x) and x else "N/A",
-                    "P/E":        lambda x: f"{x:.1f}x" if pd.notna(x) and x else "N/A",
-                    "Mg. EBITDA": lambda x: f"{x:.1%}"  if pd.notna(x) and x else "N/A",
-                    "ROE":        lambda x: f"{x:.1%}"  if pd.notna(x) and x else "N/A",
-                    "Div. Yield": lambda x: f"{x:.2%}"  if pd.notna(x) and x else "N/A",
-                    "Q Tobin":    lambda x: f"{x:.2f}x" if pd.notna(x) and x else "N/A",
-                    "Beta":       lambda x: f"{x:.2f}"  if pd.notna(x) and x else "N/A",
-                }, na_rep="N/A")
+                # na_rep removido en pandas 3.0 — manejar NaN en cada lambda
+                fmt_mult = lambda x: f"{x:.1f}x" if pd.notna(x) and x is not None else "N/A"
+                fmt_pct  = lambda x: f"{x:.1%}"  if pd.notna(x) and x is not None else "N/A"
+                fmt_pct2 = lambda x: f"{x:.2%}"  if pd.notna(x) and x is not None else "N/A"
+                fmt_val  = lambda x: f"{x:.2f}"  if pd.notna(x) and x is not None else "N/A"
+                try:
+                    return df.style.format({
+                        "EV/EBITDA":  fmt_mult,
+                        "P/E":        fmt_mult,
+                        "Mg. EBITDA": fmt_pct,
+                        "ROE":        fmt_pct,
+                        "Div. Yield": fmt_pct2,
+                        "Q Tobin":    lambda x: f"{x:.2f}x" if pd.notna(x) and x is not None else "N/A",
+                        "Beta":       fmt_val,
+                    })
+                except Exception:
+                    return df  # fallback sin formato si falla
 
             st.dataframe(_style_peer(peer_df), use_container_width=True, hide_index=True)
     else:
